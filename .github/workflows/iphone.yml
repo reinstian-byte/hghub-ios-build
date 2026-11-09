@@ -48,7 +48,9 @@ jobs:
           workspace="$(find src-tauri/gen/apple -maxdepth 1 -name '*.xcworkspace' -print -quit)"
           if [ -n "$workspace" ]; then args=(-workspace "$workspace"); else args=(-project "$project"); fi
           scheme="$(xcodebuild -project "$project" -list -json | python3 -c 'import json,sys; s=json.load(sys.stdin)["project"]["schemes"]; print(next((x for x in s if x.lower().endswith("ios")),s[0]))')"
-          xcodebuild "${args[@]}" -scheme "$scheme" -configuration Release -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/HGhub.xcarchive" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO archive
+          swift_lib="$(dirname "$(xcrun --toolchain XcodeDefault --find swiftc)")/../lib/swift/iphoneos"
+          test -f "$swift_lib/libswiftCompatibility56.a" || { echo "::error::Missing iPhone Swift compatibility library in $swift_lib"; exit 1; }
+          xcodebuild "${args[@]}" 'OTHER_LDFLAGS=$(inherited)'" -L$swift_lib" -scheme "$scheme" -configuration Release -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/HGhub.xcarchive" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO archive
           apps=("$RUNNER_TEMP/HGhub.xcarchive/Products/Applications/"*.app)
           app="${apps[0]}"
           test -d "$app"
