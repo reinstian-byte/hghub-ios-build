@@ -1,0 +1,68 @@
+name: Build iPhone app
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/iphone.yml']
+permissions:
+  contents: read
+jobs:
+  iphone:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Minireel/HGhub
+          ref: 398f5970d9d9434559a6a8abe653509807840bdc
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Prepare tools
+        run: |
+          command -v xcodegen || brew install xcodegen
+          command -v pod || brew install cocoapods
+          rustup update stable
+          rustup default stable
+          rustup target add aarch64-apple-ios
+          pnpm install --frozen-lockfile
+      - name: Build for iPhone
+        run: |
+          set -euo pipefail
+          pnpm tauri ios init --ci
+          # Keep Tauri running: its Xcode build phase asks the CLI for build settings.
+          pnpm tauri ios build --open --ci > "$RUNNER_TEMP/tauri.log" 2>&1 &
+          cli=$!
+          trap 'kill "$cli" 2>/dev/null || true' EXIT
+          addr="$(getconf DARWIN_USER_TEMP_DIR)/com.hghub.huangguo-server-addr"
+          for i in {1..240}; do
+            [ -s "$addr" ] && break
+            [ -s "${TMPDIR%/}/com.hghub.huangguo-server-addr" ] && break
+            kill -0 "$cli" 2>/dev/null || { cat "$RUNNER_TEMP/tauri.log"; exit 1; }
+            sleep 1
+          done
+          project="$(find src-tauri/gen/apple -maxdepth 1 -name '*.xcodeproj' -print -quit)"
+          workspace="$(find src-tauri/gen/apple -maxdepth 1 -name '*.xcworkspace' -print -quit)"
+          if [ -n "$workspace" ]; then args=(-workspace "$workspace"); else args=(-project "$project"); fi
+          scheme="$(xcodebuild -project "$project" -list -json | python3 -c 'import json,sys; s=json.load(sys.stdin)["project"]["schemes"]; print(next((x for x in s if x.lower().endswith("ios")),s[0]))')"
+          xcodebuild "${args[@]}" -scheme "$scheme" -configuration Release -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/HGhub.xcarchive" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO archive
+          apps=("$RUNNER_TEMP/HGhub.xcarchive/Products/Applications/"*.app)
+          app="${apps[0]}"
+          test -d "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$app/Info.plist")" = iPhoneOS
+          exe="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")"
+          lipo -verify_arch arm64 "$app/$exe"
+          mkdir -p "$RUNNER_TEMP/package/Payload"
+          ditto "$app" "$RUNNER_TEMP/package/Payload/$(basename "$app")"
+          cd "$RUNNER_TEMP/package"
+          /usr/bin/zip -qry "$GITHUB_WORKSPACE/HGhub-unsigned.ipa" Payload
+          unzip -tq "$GITHUB_WORKSPACE/HGhub-unsigned.ipa"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HGhub-iPhone
+          path: HGhub-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
